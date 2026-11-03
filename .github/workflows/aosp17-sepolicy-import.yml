@@ -1,0 +1,68 @@
+name: Import exact official Android17 system/sepolicy
+
+on:
+  push:
+    branches:
+      - port/a17-sepolicy-import-20261103
+    paths:
+      - .github/workflows/aosp17-sepolicy-import.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: aosp17-sepolicy-import
+  cancel-in-progress: false
+
+jobs:
+  import-exact-aosp17:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SOURCE_SHA: e066568e98d86db31a9346d30977f3632fa7073c
+      SOURCE_TREE: f0e857a84958d5472dee9187c54f7b4f191a415a
+      TARGET_BRANCH: port/a17-sepolicy-aosp17-base-20261103
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch official AOSP17 release and verify source commit and tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/aosp-sepolicy"
+          cd "$RUNNER_TEMP/aosp-sepolicy"
+          git init -q
+          git remote add aosp https://android.googlesource.com/platform/system/sepolicy
+          git -c protocol.version=2 fetch --no-tags --depth=1 --filter=blob:none \
+            aosp refs/tags/android-17.0.0_r1
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$SOURCE_SHA"
+          test "$(git rev-parse 'FETCH_HEAD^{tree}')" = "$SOURCE_TREE"
+          git cat-file -e "$SOURCE_TREE^{tree}"
+          echo "PASS: exact source identity matches official Google SELinux release"
+      - name: Publish isolated parentless snapshot without weakening neverallow rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/aosp-sepolicy"
+          git remote add publish "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          ref="refs/heads/$TARGET_BRANCH"
+          existing="$(git ls-remote --heads publish "$ref" | cut -f1)"
+          if [ -n "$existing" ]; then
+            git -c protocol.version=2 fetch --no-tags --depth=1 --filter=blob:none publish "$ref"
+            test "$(git rev-parse 'FETCH_HEAD^{tree}')" = "$SOURCE_TREE" || {
+              echo "Existing target branch has a different source tree. Refusing overwrite."
+              exit 1
+            }
+            echo "PASS: previous source snapshot matches official AOSP17 tree"
+            exit 0
+          fi
+          export GIT_AUTHOR_NAME="PixelExperience-Reborn CI"
+          export GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+          snapshot="$(printf 'system/sepolicy: exact AOSP17 r1 source snapshot\n\nOriginal Google commit: %s\nGit tree: %s\nUpstream ancestry not mirrored. No PE neverallow relaxations.\n' \
+            "$SOURCE_SHA" "$SOURCE_TREE" | git commit-tree "$SOURCE_TREE")"
+          test "$(git rev-parse "$snapshot^{tree}")" = "$SOURCE_TREE"
+          git -c protocol.version=2 push --no-thin publish "$snapshot:$ref"
+          test "$(git ls-remote --heads publish "$ref" | cut -f1)" = "$snapshot"
+          echo "PASS: sepolicy exact-tree snapshot $snapshot"
